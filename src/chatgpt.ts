@@ -5,6 +5,11 @@ import { config } from "./config.js";
 import { execa } from "execa";
 import { Cache } from "./cache.js";
 
+interface MessageQueueType {
+  message:Message,
+  remainAmount: number
+}
+
 export class ChatGPTBot {
   // Record talkid with conversation id
   conversations = new Map<string, ChatGPTConversation>();
@@ -14,6 +19,7 @@ export class ChatGPTBot {
   setBotName(botName: string) {
     this.botName = botName;
   }
+  messageQueue: MessageQueueType[] = []
   /**
    * 登录，获取session token
    */
@@ -68,7 +74,6 @@ export class ChatGPTBot {
         .map((token: string) => {
           return new ChatGPTAPI({
             sessionToken: token,
-            accessTokenTTL: 60000000
           });
         });
       console.log(`Chatgpt pool size: ${chatGPTPools.length}`);
@@ -106,8 +111,6 @@ export class ChatGPTBot {
     this.conversations.set(talkerId, conversation);
     return conversation;
   }
-  // TODO: Add reset conversation id and ping pong
-  async command(): Promise<void> {}
 
   /**
    * 清理message，删除一些回复内容
@@ -131,43 +134,107 @@ export class ChatGPTBot {
     return conversation.sendMessage(text)
   }
   /**
-   * 监听到客户端消息
+   * 获取发送实例
    */
-  async onMessage(message: Message) {
+  useSendItem(message: Message) {
     const talker = message.talker(); // 发送消息的人
-    const text = message.text(); // 发送的文本
     const room = message.room(); // 群聊
-    
-    let responseObj:RoomInterface | ContactInterface = talker
+    const text = message.text(); // 发送的文本
+
+    const realText = this.cleanMessage(text).replace(`archer`, "").trim(); // chatbot替换掉
+
+    let responseItem:RoomInterface | ContactInterface = talker
     if(talker.self()) { // 自己，不能和自己say，需要获取到对方的消息
-      responseObj = message.to() as ContactInterface
+      responseItem = message.to() as ContactInterface
     }
     if(room) { // 群发消息
-      responseObj = room
+      responseItem = room
     }
+    return {
+      talker,
+      room,
+      text: realText,
+      say: (text: string, cut: boolean) => {
+        const sendText = cut ?  `${realText.slice(0,12)}\n- - - - -\n${text}` : `${realText}\n ------\n${text}`
+        responseItem.say(sendText, talker)
+      }
+    }
+  }
+  /**
+   * 预发送。把需要发送的消息放到队列里
+   */
+  preSendMessage(message: Message) {
+    this.messageQueue.push({
+      message,
+      remainAmount: 2 // 最多发2次
+    })
+
+    const { say } = this.useSendItem(message)
+
+    if(this.messageQueue.length === 1) { // 只有一个消息。代表着前面没有任何内容
+      say(`给我点时间，我需要思考一下这个问题...`, true)
+      this.sendMessageFn()
+    } else { // 发送排队提示语
+      say(`我在想其他人的问题，前面有: ${this.messageQueue.length-1}人`, true)
+    }
+  }
+  /**
+   * 发送消息方法，用于递归
+   */
+  async sendMessageFn() {
+    const item = this.messageQueue[0]
+    if(!item) return
+    const { say } = this.useSendItem(item.message)
+
+    item.remainAmount-- // 发送次数减少一次
 
     try {
-      const realText = this.cleanMessage(text).replace(`chatbot`, "").trim();
+      await this.sendMessage(item.message)
+      this.messageQueue.shift()
+    } catch(err) {
+      console.log('error: ', err);
       
+      if(item.remainAmount <= 0) { // 没有发送机会了，则报错
+        this.messageQueue.shift()
+        say(`出现了点意外，我挂了`, true)
+      } else { // 还有重发机会
+        console.log("消息超时，重发");
+        say(`emm, 网络有点差，我再试一试...`, true)
+        // 这里不需要递归，因为下面的函数肯定会执行
+      }
+    }
+
+    // 判断是否队列里，是否还有内容需要执行
+    if(this.messageQueue.length > 0) {
+      if(this.messageQueue[0].remainAmount === 2) { // 标明是下个任务
+        say(`我在想这个问题`, true)
+      }
+      this.sendMessageFn()
+    }
+  }
+  /**
+   * 发送消息。 先请求chatGPT内容，然后发送到客户端
+   */
+  async sendMessage(message: Message) {
+    const {text, talker, room, say} = this.useSendItem(message)
+
+    try {
       if (!room) { // 私人聊天
         console.log(`发消息ing,给: ${talker.name()}`);
-        responseObj.say(`thinking: ${realText.slice(0,6)}...`)
-        const response = await this.getGPTMessage(realText, talker.id);
-        responseObj.say(response)
+        const response = await this.getGPTMessage(text, talker.id);
+        say(response, false)
         console.log(`消息已发送给: ${talker.name()}`);
         return;
       }
       
+      // 群聊
       const topic = await room.topic();
 
       console.log(`发消息ing给: ${topic}`);
-      responseObj.say(`thinking: ${realText.slice(0,6)}...`)
-      const response = await this.getGPTMessage(realText, talker.id);
-      const result = `${realText}\n ------\n ${response}`;
-      await responseObj.say(result, talker);
+      const response = await this.getGPTMessage(text, talker.id);
+      say(response, false)
       console.log(`消息已发送给: ${topic}`);
     } catch (error) {
-      responseObj.say("别问了，我挂了")
       return Promise.reject(error)
     }
   }

@@ -7,22 +7,6 @@ const bot = WechatyBuilder.build({
   name: "wechat-assistant", 
 });
 
-const messageQueue:Message[] = []
-
-async function sendMessage() {
-  try {
-    messageQueue[0] && await chatGPTBot.onMessage(messageQueue[0]);
-    messageQueue.shift()
-  } catch (e) {
-    console.error('发送消息出错了===',e);
-  }
-  if(messageQueue.length > 0) {
-    setTimeout(() => {
-      sendMessage()
-    }, 1000);
-  }
-}
-
 bot
   .on("scan", async (qrcode, status) => { // 扫码
     const url = `https://wechaty.js.org/qrcode/${encodeURIComponent(qrcode)}`;
@@ -42,19 +26,16 @@ bot
       return;
     }
     const text = message.text(); // 发送的文本
-    if (!text.startsWith(`chatbot`)) {
+
+    if (!text.startsWith(`archer`)) {
       return;
     }
 
-    messageQueue.push(message)
-    console.log(`收到一条消息: ${text}`);
-    if(messageQueue.length === 1) {
-      sendMessage()
-    }
+    console.log(`收到一条消息：${text}`);
+
+    chatGPTBot.preSendMessage(message)
   })
   .on("error",(error) => {
     console.log("error: ", error);
   })
-
-
 bot.start();
