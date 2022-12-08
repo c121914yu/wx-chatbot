@@ -115,19 +115,28 @@ export class ChatGPTBot {
       talker,
       room,
       text: realText,
+      responseItem,
       say: (text: string, cut: boolean) => {
         const sendText = cut && realText.length > 15
           ?  `${realText.slice(0,12)}...\n- - - - -\n${text}` 
           : `${realText}\n ------\n${text}`
         return responseItem.say(sendText, talker)
-      }
+      },
+      toRecalledText: () => message.toRecalled()
     }
   }
   /**
    * 预发送。把需要发送的消息放到队列里
    */
   async preSendMessage(message: Message) {
-    const { conversion, say } = this.useSendItem(message)
+    const { conversionId, conversion, say, responseItem, text } = this.useSendItem(message)
+
+    /* 重置会话 */
+    if(text === 'remake') {
+      this.resetConversation(conversionId)
+      responseItem.say("我们重新开始吧...")
+      return
+    }
 
     conversion.queue.push({
       message,
@@ -146,7 +155,7 @@ export class ChatGPTBot {
    * 发送消息方法，用于递归
    */
   async sendMessageFn(item: MyMessageType) {
-    const { conversion, conversionId, say } = this.useSendItem(item.message)
+    const { conversion, conversionId, say, toRecalledText } = this.useSendItem(item.message)
 
     item.remainAmount-- // 发送次数减少一次
 
@@ -159,6 +168,7 @@ export class ChatGPTBot {
       if(item.remainAmount <= 0) { // 没有发送机会了，则报错。并且重置对话内容
         conversion.queue.shift()
         await say(`出现了点意外，我挂了`, true)
+        await toRecalledText()
         this.resetConversation(conversionId)
       } else { // 还有重发机会
         console.log("消息超时，重发");
