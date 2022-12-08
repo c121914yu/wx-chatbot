@@ -8,7 +8,7 @@ node > 16
 ## 安装
 
 ```sh
-npm install && poetry install  
+npm install
 ```
 
 ## **配置token**
